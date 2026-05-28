@@ -38,6 +38,29 @@ jobs:
           path: coverage.xml
           retention-days: 7
 
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.4.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Run all examples
+        run: |
+          for f in examples/*.py; do
+            echo "=== $f ==="
+            python "$f"
+            echo "--- exit 0 ---"
+          done
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
