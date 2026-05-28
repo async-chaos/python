@@ -20,6 +20,50 @@ def _require_async(fn: object, decorator_name: str) -> None:
         )
 
 
+def timeout(
+    seconds: float,
+    exception: Type[Exception] = asyncio.TimeoutError,
+):
+    """Decorator: wraps the function with asyncio.wait_for(timeout=seconds).
+
+    asyncio.wait_for cancels the inner task via Task.cancel() when the deadline
+    fires, and guarantees the coroutine is no longer running when it returns.
+
+    Global disable (asynchaos.disable()) bypasses this decorator entirely.
+    Unlike @inject_latency, timeout is not influenced by chaos_zone — it is
+    infrastructure config, not randomized fault injection.
+
+    Args:
+        seconds: Timeout budget in seconds. Must be > 0.
+        exception: Exception class to raise on timeout (default asyncio.TimeoutError).
+            When overridden, the TimeoutError is caught and re-raised as this type.
+    """
+    if seconds <= 0:
+        raise ValueError(f"timeout seconds must be > 0, got {seconds!r}")
+
+    def decorator(fn):
+        _require_async(fn, "timeout")
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            if not _global_config.is_enabled:
+                return await fn(*args, **kwargs)
+
+            if exception is asyncio.TimeoutError:
+                return await asyncio.wait_for(fn(*args, **kwargs), timeout=seconds)
+            else:
+                try:
+                    return await asyncio.wait_for(fn(*args, **kwargs), timeout=seconds)
+                except asyncio.TimeoutError as exc:
+                    raise exception(
+                        f"asynchaos @timeout: {fn.__qualname__!r} exceeded {seconds}s"
+                    ) from exc
+
+        return wrapper
+
+    return decorator
+
+
 def drop_connections(
     probability: Union[float, Condition] = 0.1,
     exception: Type[Exception] = ConnectionError,
