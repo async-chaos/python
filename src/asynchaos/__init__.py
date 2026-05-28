@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .conditions import Condition, ProbabilityCondition, RateCondition
-from .context import _global_config
+from .context import _global_config, chaos_zone
 from .decorators import chaos, drop_connections, inject_latency, timeout
 from .exceptions import ChaosException, ChaosTimeout, ConnectionDropped, LatencyInjected
 
@@ -35,6 +35,7 @@ __all__ = [
     "drop_connections",
     "timeout",
     "chaos",
+    "chaos_zone",
     # global control
     "enable",
     "disable",
