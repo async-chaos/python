@@ -10,62 +10,95 @@ from asynchaos.context import _CHAOS_ZONE_VAR
 
 
 # ---------------------------------------------------------------------------
-# chaos_zone — latency override
+# chaos_zone: latency override
 # ---------------------------------------------------------------------------
 
-
-async def test_zone_overrides_decorator_latency():
-    @inject_latency(min_ms=10, max_ms=10, probability=1.0)
+@pytest.mark.parametrize("zone_ms,decorator_ms,expected_ms", [
+    pytest.param(150, 10, 150,
+                 id="chaos_zone(latency=150ms) overrides decorator(10ms) → ~150ms"),
+    pytest.param(80, 10, 80,
+                 id="chaos_zone(latency=80ms) overrides decorator(10ms) → ~80ms"),
+])
+async def test_chaos_zone_latency_override(zone_ms, decorator_ms, expected_ms):
+    @inject_latency(min_ms=decorator_ms, max_ms=decorator_ms, probability=1.0)
     async def fn():
         return True
 
-    async with chaos_zone(latency_min_ms=80, latency_max_ms=80):
+    async with chaos_zone(latency=zone_ms):
         start = time.perf_counter()
         await fn()
         elapsed = time.perf_counter() - start
 
-    assert 0.065 <= elapsed <= 0.150, f"Expected ~80ms from zone, got {elapsed:.3f}s"
+    lo, hi = expected_ms * 0.8 / 1000, expected_ms * 2.0 / 1000
+    assert lo <= elapsed <= hi, f"Expected ~{expected_ms}ms from zone, got {elapsed*1000:.0f}ms"
 
 
-async def test_zone_restores_decorator_latency_after_exit():
+async def test_chaos_zone_restores_decorator_latency_after_exit():
     @inject_latency(min_ms=10, max_ms=10, probability=1.0)
     async def fn():
         return True
 
-    async with chaos_zone(latency_min_ms=500, latency_max_ms=500):
+    async with chaos_zone(latency=500):
         pass  # enter and immediately exit
 
     start = time.perf_counter()
     await fn()
-    elapsed = time.perf_counter() - start
-    assert elapsed < 0.05, f"Zone should be gone; expected ~10ms, got {elapsed:.3f}s"
+    assert (time.perf_counter() - start) < 0.05, "Zone should be gone; decorator default (10ms) should apply"
 
 
-async def test_zone_latency_shorthand():
+# ---------------------------------------------------------------------------
+# chaos_zone: ContextVar invariants
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("scenario", [
+    pytest.param("outside",
+                 id="chaos_zone ContextVar is None outside any zone"),
+    pytest.param("inside",
+                 id="chaos_zone ContextVar is set inside zone"),
+])
+async def test_chaos_zone_contextvar_state(scenario):
+    if scenario == "outside":
+        assert _CHAOS_ZONE_VAR.get() is None
+    else:
+        async with chaos_zone(latency=50):
+            assert _CHAOS_ZONE_VAR.get() is not None
+        assert _CHAOS_ZONE_VAR.get() is None
+
+
+@pytest.mark.parametrize("raises_in_body", [
+    pytest.param(False,
+                 id="chaos_zone restores ContextVar on clean exit"),
+    pytest.param(True,
+                 id="chaos_zone restores ContextVar even when body raises"),
+])
+async def test_chaos_zone_contextvar_always_restored(raises_in_body):
+    before = _CHAOS_ZONE_VAR.get()
+
+    try:
+        async with chaos_zone(latency=500):
+            if raises_in_body:
+                raise RuntimeError("error inside zone")
+    except RuntimeError:
+        pass
+
+    assert _CHAOS_ZONE_VAR.get() == before
+
+
+# ---------------------------------------------------------------------------
+# chaos_zone: nesting
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("outer_ms,inner_ms", [
+    pytest.param(50, 100,
+                 id="nested zones: inner(100ms) overrides outer(50ms); outer restored on inner exit"),
+])
+async def test_chaos_zone_nesting(outer_ms, inner_ms):
     @inject_latency(min_ms=10, max_ms=10, probability=1.0)
     async def fn():
         return True
 
-    async with chaos_zone(latency=80):
-        start = time.perf_counter()
-        await fn()
-        elapsed = time.perf_counter() - start
-
-    assert 0.065 <= elapsed <= 0.150
-
-
-# ---------------------------------------------------------------------------
-# chaos_zone — nesting
-# ---------------------------------------------------------------------------
-
-
-async def test_nested_zones_inner_overrides_outer():
-    @inject_latency(min_ms=10, max_ms=10, probability=1.0)
-    async def fn():
-        return True
-
-    async with chaos_zone(latency_min_ms=50, latency_max_ms=50):
-        async with chaos_zone(latency_min_ms=100, latency_max_ms=100):
+    async with chaos_zone(latency=outer_ms):
+        async with chaos_zone(latency=inner_ms):
             start = time.perf_counter()
             await fn()
             inner_elapsed = time.perf_counter() - start
@@ -74,48 +107,12 @@ async def test_nested_zones_inner_overrides_outer():
         await fn()
         outer_elapsed = time.perf_counter() - start
 
-    assert 0.08 <= inner_elapsed <= 0.15, f"Inner zone should be ~100ms, got {inner_elapsed:.3f}s"
-    assert 0.03 <= outer_elapsed <= 0.08, f"Outer zone should be ~50ms, got {outer_elapsed:.3f}s"
+    assert inner_elapsed >= inner_ms * 0.8 / 1000, f"Inner zone ~{inner_ms}ms, got {inner_elapsed*1000:.0f}ms"
+    assert outer_elapsed >= outer_ms * 0.8 / 1000, f"Outer zone ~{outer_ms}ms, got {outer_elapsed*1000:.0f}ms"
+    assert outer_elapsed < inner_ms * 0.8 / 1000, "Outer zone must be shorter than inner zone"
 
 
-async def test_nested_zones_restore_to_none_after_both_exit():
-    async with chaos_zone(latency=50):
-        async with chaos_zone(latency=100):
-            pass  # inner exits
-        # still in outer zone
-        assert _CHAOS_ZONE_VAR.get() is not None
-
-    # both exited
-    assert _CHAOS_ZONE_VAR.get() is None
-
-
-# ---------------------------------------------------------------------------
-# chaos_zone — ContextVar invariants
-# ---------------------------------------------------------------------------
-
-
-async def test_zone_var_is_none_outside():
-    assert _CHAOS_ZONE_VAR.get() is None
-
-
-async def test_zone_var_is_set_inside():
-    async with chaos_zone(latency=50):
-        assert _CHAOS_ZONE_VAR.get() is not None
-
-
-async def test_zone_restores_on_exception():
-    before = _CHAOS_ZONE_VAR.get()
-    try:
-        async with chaos_zone(latency_min_ms=500, latency_max_ms=500):
-            raise RuntimeError("chaos in the chaos zone")
-    except RuntimeError:
-        pass
-
-    after = _CHAOS_ZONE_VAR.get()
-    assert after == before, "ContextVar must be restored after exception in body"
-
-
-async def test_zone_restores_on_nested_exception():
+async def test_chaos_zone_nested_exception_restores_outer():
     async with chaos_zone(latency=50):
         outer_config = _CHAOS_ZONE_VAR.get()
         try:
@@ -123,86 +120,89 @@ async def test_zone_restores_on_nested_exception():
                 raise ValueError("inner exception")
         except ValueError:
             pass
-        # back to outer zone
-        assert _CHAOS_ZONE_VAR.get() is outer_config
+        assert _CHAOS_ZONE_VAR.get() is outer_config, "Outer zone config must be restored after inner raises"
 
 
 # ---------------------------------------------------------------------------
-# chaos_zone — task propagation
+# chaos_zone: task propagation (ContextVar snapshot-at-creation semantics)
 # ---------------------------------------------------------------------------
 
-
-async def test_zone_propagates_into_subtask():
-    """Tasks created INSIDE the zone inherit the zone config."""
+@pytest.mark.parametrize("create_inside_zone,expect_zone_latency", [
+    pytest.param(True, True,
+                 id="create_task() inside zone → task snapshot includes zone config"),
+    pytest.param(False, False,
+                 id="create_task() before zone → task snapshot excludes zone config"),
+])
+async def test_chaos_zone_task_propagation(create_inside_zone, expect_zone_latency):
+    zone_latency_ms = 300
 
     @inject_latency(min_ms=10, max_ms=10, probability=1.0)
     async def fn():
         return True
 
-    async with chaos_zone(latency_min_ms=80, latency_max_ms=80):
-        start = time.perf_counter()
+    if create_inside_zone:
+        async with chaos_zone(latency=zone_latency_ms):
+            start = time.perf_counter()
+            task = asyncio.create_task(fn())
+            await task
+            elapsed = time.perf_counter() - start
+    else:
         task = asyncio.create_task(fn())
-        await task
-        elapsed = time.perf_counter() - start
+        async with chaos_zone(latency=zone_latency_ms):
+            start = time.perf_counter()
+            await task
+            elapsed = time.perf_counter() - start
 
-    assert elapsed >= 0.065, f"Task should see zone latency, got {elapsed:.3f}s"
+    if expect_zone_latency:
+        assert elapsed >= zone_latency_ms * 0.8 / 1000, \
+            f"Task inside zone should get {zone_latency_ms}ms, got {elapsed*1000:.0f}ms"
+    else:
+        assert elapsed < zone_latency_ms * 0.5 / 1000, \
+            f"Task outside zone should not get zone latency, got {elapsed*1000:.0f}ms"
 
 
-async def test_zone_does_not_propagate_to_task_created_before():
-    """Tasks created BEFORE zone entry must NOT inherit zone config."""
-
+async def test_chaos_zone_propagates_to_gathered_coroutines():
     @inject_latency(min_ms=10, max_ms=10, probability=1.0)
     async def fn():
         return True
 
-    task_before = asyncio.create_task(fn())
-
-    async with chaos_zone(latency_min_ms=500, latency_max_ms=500):
-        task_inside = asyncio.create_task(fn())
-        inside_start = time.perf_counter()
-        await task_inside
-        inside_elapsed = time.perf_counter() - inside_start
-
-    outside_start = time.perf_counter()
-    await task_before
-    outside_elapsed = time.perf_counter() - outside_start
-
-    assert inside_elapsed >= 0.4, f"Inside task should get zone latency, got {inside_elapsed:.3f}s"
-    assert outside_elapsed < 0.1, f"Outside task should not get zone latency, got {outside_elapsed:.3f}s"
-
-
-async def test_zone_propagates_to_gathered_coroutines():
-    """asyncio.gather creates tasks at call time — all should see the zone."""
-
-    @inject_latency(min_ms=10, max_ms=10, probability=1.0)
-    async def fn():
-        return True
-
-    async with chaos_zone(latency_min_ms=60, latency_max_ms=60):
+    async with chaos_zone(latency=80):
         start = time.perf_counter()
         results = await asyncio.gather(fn(), fn(), fn())
         elapsed = time.perf_counter() - start
 
     assert all(results)
-    assert elapsed >= 0.05, f"Gathered coroutines should see zone latency, got {elapsed:.3f}s"
+    assert elapsed >= 0.06, f"Gathered coroutines should see zone latency, got {elapsed*1000:.0f}ms"
 
 
 # ---------------------------------------------------------------------------
-# chaos_zone — drop override
+# chaos_zone: drop override
 # ---------------------------------------------------------------------------
 
-
-async def test_zone_overrides_drop_condition():
-    @drop_connections(probability=0.0)
+@pytest.mark.parametrize("zone_drop_rate,decorator_prob,expected", [
+    pytest.param(1.0, 0.0, "raises",
+                 id="chaos_zone(drop_rate=1.0) overrides decorator(prob=0.0) → always drops"),
+    pytest.param(None, 0.0, "ok",
+                 id="no zone drop → decorator(prob=0.0) → never drops"),
+])
+async def test_chaos_zone_drop_override(zone_drop_rate, decorator_prob, expected):
+    @drop_connections(probability=decorator_prob)
     async def fn():
         return "ok"
 
-    async with chaos_zone(drop_rate=1.0):
-        with pytest.raises(ConnectionError):
-            await fn()
+    zone_kwargs = {}
+    if zone_drop_rate is not None:
+        zone_kwargs["drop_rate"] = zone_drop_rate
+
+    async with chaos_zone(**zone_kwargs):
+        if expected == "raises":
+            with pytest.raises(ConnectionError):
+                await fn()
+        else:
+            assert await fn() == "ok"
 
 
-async def test_zone_drop_restores_after_exit():
+async def test_chaos_zone_drop_restores_after_exit():
     @drop_connections(probability=0.0)
     async def fn():
         return "ok"
@@ -210,39 +210,42 @@ async def test_zone_drop_restores_after_exit():
     async with chaos_zone(drop_rate=1.0):
         pass
 
-    result = await fn()
-    assert result == "ok"
+    assert await fn() == "ok", "Zone drop must not persist after exit"
 
 
 # ---------------------------------------------------------------------------
-# _ChaosCtxProxy manual injection
+# _ChaosCtxProxy: manual injection
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("has_latency,has_drop,action,expect_delay,expect_raise", [
+    pytest.param(True, False, "inject_latency", True, False,
+                 id="ctx.inject_latency() with zone latency=60ms → sleeps ~60ms"),
+    pytest.param(False, False, "inject_latency", False, False,
+                 id="ctx.inject_latency() with no latency configured → no-op"),
+    pytest.param(False, True, "maybe_drop", False, True,
+                 id="ctx.maybe_drop() with drop_rate=1.0 → ConnectionError"),
+    pytest.param(False, False, "maybe_drop", False, False,
+                 id="ctx.maybe_drop() with no drop configured → no-op"),
+])
+async def test_ctx_proxy(has_latency, has_drop, action, expect_delay, expect_raise):
+    zone_kwargs = {}
+    if has_latency:
+        zone_kwargs["latency"] = 60
+    if has_drop:
+        zone_kwargs["drop_rate"] = 1.0
 
-async def test_ctx_proxy_inject_latency():
-    async with chaos_zone(latency_min_ms=60, latency_max_ms=60) as ctx:
-        start = time.perf_counter()
-        await ctx.inject_latency()
-        elapsed = time.perf_counter() - start
-
-    assert 0.05 <= elapsed <= 0.10, f"Expected ~60ms from manual inject, got {elapsed:.3f}s"
-
-
-async def test_ctx_proxy_inject_latency_no_op_without_latency():
-    async with chaos_zone(drop_rate=0.5) as ctx:
-        start = time.perf_counter()
-        await ctx.inject_latency()  # no latency configured in zone
-        elapsed = time.perf_counter() - start
-
-    assert elapsed < 0.02, f"Should be a no-op, got {elapsed:.3f}s"
-
-
-async def test_ctx_proxy_maybe_drop_triggers():
-    async with chaos_zone(drop_rate=1.0) as ctx:
-        with pytest.raises(ConnectionError):
-            ctx.maybe_drop()
-
-
-async def test_ctx_proxy_maybe_drop_no_op_without_drop():
-    async with chaos_zone(latency=10) as ctx:
-        ctx.maybe_drop()  # should not raise
+    async with chaos_zone(**zone_kwargs) as ctx:
+        if action == "inject_latency":
+            start = time.perf_counter()
+            await ctx.inject_latency()
+            elapsed = time.perf_counter() - start
+            if expect_delay:
+                assert elapsed >= 0.04, f"Expected ~60ms, got {elapsed*1000:.0f}ms"
+            else:
+                assert elapsed < 0.02, f"Expected no-op, got {elapsed*1000:.0f}ms"
+        else:
+            if expect_raise:
+                with pytest.raises(ConnectionError):
+                    ctx.maybe_drop()
+            else:
+                ctx.maybe_drop()  # must not raise

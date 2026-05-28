@@ -385,6 +385,58 @@ async def test_baseline():
 
 ---
 
+## Test Output
+
+Tests are named to describe the exact chaos scenario exercised. Running `pytest -v` makes every tested fault visible at a glance:
+
+```
+$ pytest tests/ -v
+
+tests/test_conditions.py::test_probability_always PASSED
+tests/test_conditions.py::test_probability_never PASSED
+tests/test_conditions.py::test_probability_statistical PASSED
+tests/test_conditions.py::test_rate_condition_pattern PASSED
+tests/test_conditions.py::test_rate_condition_thread_safe PASSED
+...
+tests/test_context.py::test_chaos_zone_latency_override[chaos_zone(latency=150ms) overrides decorator(10ms) → ~150ms] PASSED
+tests/test_context.py::test_chaos_zone_latency_override[chaos_zone(latency=80ms) overrides decorator(10ms) → ~80ms] PASSED
+tests/test_context.py::test_chaos_zone_contextvar_state[chaos_zone ContextVar is None outside any zone] PASSED
+tests/test_context.py::test_chaos_zone_contextvar_state[chaos_zone ContextVar is set inside zone] PASSED
+tests/test_context.py::test_chaos_zone_contextvar_always_restored[chaos_zone restores ContextVar on clean exit] PASSED
+tests/test_context.py::test_chaos_zone_contextvar_always_restored[chaos_zone restores ContextVar even when body raises] PASSED
+tests/test_context.py::test_chaos_zone_nesting[nested zones: inner(100ms) overrides outer(50ms); outer restored on inner exit] PASSED
+tests/test_context.py::test_chaos_zone_task_propagation[create_task() inside zone → task snapshot includes zone config] PASSED
+tests/test_context.py::test_chaos_zone_task_propagation[create_task() before zone → task snapshot excludes zone config] PASSED
+tests/test_context.py::test_chaos_zone_drop_override[chaos_zone(drop_rate=1.0) overrides decorator(prob=0.0) → always drops] PASSED
+tests/test_context.py::test_chaos_zone_drop_override[no zone drop → decorator(prob=0.0) → never drops] PASSED
+tests/test_context.py::test_ctx_proxy[ctx.inject_latency() with zone latency=60ms → sleeps ~60ms] PASSED
+tests/test_context.py::test_ctx_proxy[ctx.maybe_drop() with drop_rate=1.0 → ConnectionError] PASSED
+tests/test_decorators.py::test_inject_latency_timing[inject_latency(80ms, prob=1.0) → always sleeps ~80ms] PASSED
+tests/test_decorators.py::test_inject_latency_timing[inject_latency(5000ms, prob=0.0) → never sleeps] PASSED
+tests/test_decorators.py::test_inject_latency_rate_condition[inject_latency(RateCondition(1/2)) → every other call delayed] PASSED
+tests/test_decorators.py::test_inject_latency_rate_condition[inject_latency(RateCondition(2/5)) → first 2 of each 5 delayed] PASSED
+tests/test_decorators.py::test_inject_latency_global_control[inject_latency(5s) + asynchaos.disable() → no sleep] PASSED
+tests/test_decorators.py::test_inject_latency_global_control[inject_latency(5s) + global_probability=0.0 → no sleep] PASSED
+tests/test_decorators.py::test_drop_connections_raises[drop_connections(prob=1.0) → always raises ConnectionError] PASSED
+tests/test_decorators.py::test_drop_connections_raises[drop_connections(prob=0.0) → never raises, fn executes normally] PASSED
+tests/test_decorators.py::test_drop_connections_raises[drop_connections(prob=1.0, exception=OSError) → always raises OSError] PASSED
+tests/test_decorators.py::test_drop_connections_chaos_exception_hierarchy[drop_connections(exception=ConnectionDropped) → ChaosException subclass catchable as ConnectionError] PASSED
+tests/test_decorators.py::test_timeout_deadline[timeout(0.05s) → fires, call would take 10s] PASSED
+tests/test_decorators.py::test_timeout_deadline[timeout(1.0s) → passes, fast call completes normally] PASSED
+tests/test_decorators.py::test_timeout_deadline[timeout(0.05s, exception=RuntimeError) → custom exception raised] PASSED
+tests/test_decorators.py::test_timeout_invalid_deadline[timeout(seconds=0) → ValueError at decoration time] PASSED
+tests/test_decorators.py::test_chaos_combined[chaos(latency=500ms, timeout=0.05s) → timeout fires during latency sleep] PASSED
+tests/test_decorators.py::test_chaos_combined[chaos(latency=20ms, timeout=1.0s) → latency within budget, call succeeds] PASSED
+tests/test_decorators.py::test_chaos_combined[chaos(drop_rate=1.0) → ConnectionError before fn body runs] PASSED
+tests/test_decorators.py::test_chaos_combined[chaos(latency=500ms, timeout=0.05s, drop_rate=1.0) → timeout wins over drop] PASSED
+tests/test_decorators.py::test_chaos_custom_exceptions[chaos(timeout, custom_exception=RuntimeError) → RuntimeError on deadline] PASSED
+tests/test_decorators.py::test_chaos_custom_exceptions[chaos(drop, custom_exception=OSError) → OSError on connection drop] PASSED
+...
+83 passed in 2.81s
+```
+
+---
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
