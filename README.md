@@ -38,7 +38,7 @@ pip install asynchaos
 For development:
 
 ```bash
-git clone https://github.com/yourusername/asynchaos
+git clone https://github.com/async-chaos/python
 cd asynchaos
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"

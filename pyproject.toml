@@ -40,11 +40,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/asynchaos"
-Documentation = "https://github.com/yourusername/asynchaos#readme"
-Repository = "https://github.com/yourusername/asynchaos"
-"Bug Tracker" = "https://github.com/yourusername/asynchaos/issues"
-Changelog = "https://github.com/yourusername/asynchaos/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/async-chaos/python"
+Documentation = "https://github.com/async-chaos/python#readme"
+Repository = "https://github.com/async-chaos/python"
+"Bug Tracker" = "https://github.com/async-chaos/python/issues"
+Changelog = "https://github.com/async-chaos/python/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]
