@@ -20,6 +20,58 @@ def _require_async(fn: object, decorator_name: str) -> None:
         )
 
 
+def drop_connections(
+    probability: Union[float, Condition] = 0.1,
+    exception: Type[Exception] = ConnectionError,
+):
+    """Decorator: probabilistically raises an exception before calling the function.
+
+    The function body is never executed when the condition triggers — the
+    exception propagates exactly as a real network failure would.
+
+    The default exception is ConnectionError (not a ChaosException subclass) so
+    existing error-handling code works without modification. To distinguish
+    injected from real errors in tests, pass exception=asynchaos.ConnectionDropped.
+
+    Args:
+        probability: Float in [0.0, 1.0] or a Condition instance (default 0.1).
+        exception: Exception class to raise (default ConnectionError).
+    """
+    condition = coerce_condition(probability)
+
+    def decorator(fn):
+        _require_async(fn, "drop_connections")
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            if _global_config.is_enabled:
+                zone = _CHAOS_ZONE_VAR.get()
+
+                eff_condition = condition
+                eff_exception = exception
+
+                if zone and zone.drop_condition is not None:
+                    eff_condition = zone.drop_condition
+                    eff_exception = zone.drop_exception
+
+                if isinstance(eff_condition, ProbabilityCondition):
+                    eff_condition = ProbabilityCondition(
+                        eff_condition._p * _global_config.global_probability
+                    )
+
+                if eff_condition.should_trigger():
+                    raise eff_exception(
+                        f"Connection dropped by asynchaos @drop_connections "
+                        f"on {fn.__qualname__!r}"
+                    )
+
+            return await fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def inject_latency(
     min_ms: float = 100.0,
     max_ms: float = 500.0,
