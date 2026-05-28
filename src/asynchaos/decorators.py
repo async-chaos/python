@@ -20,6 +20,102 @@ def _require_async(fn: object, decorator_name: str) -> None:
         )
 
 
+def chaos(
+    *,
+    latency_min_ms: Optional[float] = None,
+    latency_max_ms: Optional[float] = None,
+    latency: Optional[float] = None,
+    drop_rate: Optional[Union[float, Condition]] = None,
+    drop_exception: Type[Exception] = ConnectionError,
+    timeout_seconds: Optional[float] = None,
+    timeout_exception: Type[Exception] = asyncio.TimeoutError,
+):
+    """Combined decorator applying latency + drop + timeout in a single wrapper.
+
+    Effect ordering (outermost → innermost):
+        asyncio.wait_for(timeout_seconds)    ← fires even during the latency sleep
+          latency sleep                      ← counts against the timeout budget
+            drop check                       ← fires before the function body
+              fn(*args, **kwargs)
+
+    Example: chaos(latency=300, timeout_seconds=0.2) will always timeout because
+    the 300ms sleep exhausts the 200ms budget — this correctly models a slow network.
+
+    Args:
+        latency_min_ms: Minimum injected delay in ms.
+        latency_max_ms: Maximum injected delay in ms.
+        latency: Shorthand that sets both min and max to the same value.
+        drop_rate: Float probability or Condition for connection drops.
+        drop_exception: Exception raised on drop (default ConnectionError).
+        timeout_seconds: Hard deadline in seconds (default: no timeout).
+        timeout_exception: Exception raised on timeout (default asyncio.TimeoutError).
+    """
+    if latency is not None:
+        latency_min_ms = latency_max_ms = latency
+    if latency_min_ms is not None and latency_max_ms is None:
+        latency_max_ms = latency_min_ms
+    if latency_max_ms is not None and latency_min_ms is None:
+        latency_min_ms = latency_max_ms
+
+    drop_condition = coerce_condition(drop_rate) if drop_rate is not None else None
+
+    def decorator(fn):
+        _require_async(fn, "chaos")
+
+        @functools.wraps(fn)
+        async def _inner(*args, **kwargs):
+            if _global_config.is_enabled:
+                zone = _CHAOS_ZONE_VAR.get()
+                gp = _global_config.global_probability
+
+                if latency_min_ms is not None:
+                    eff_min = (
+                        zone.latency_min_ms
+                        if (zone and zone.latency_min_ms is not None)
+                        else latency_min_ms
+                    )
+                    eff_max = (
+                        zone.latency_max_ms
+                        if (zone and zone.latency_max_ms is not None)
+                        else latency_max_ms
+                    )
+                    await asyncio.sleep(random.uniform(eff_min, eff_max) / 1000.0)
+
+                if drop_condition is not None:
+                    eff_cond = (
+                        ProbabilityCondition(drop_condition._p * gp)
+                        if isinstance(drop_condition, ProbabilityCondition)
+                        else drop_condition
+                    )
+                    if eff_cond.should_trigger():
+                        raise drop_exception(
+                            f"Connection dropped by asynchaos @chaos on {fn.__qualname__!r}"
+                        )
+
+            return await fn(*args, **kwargs)
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            if timeout_seconds is not None and _global_config.is_enabled:
+                if timeout_exception is asyncio.TimeoutError:
+                    return await asyncio.wait_for(
+                        _inner(*args, **kwargs), timeout=timeout_seconds
+                    )
+                else:
+                    try:
+                        return await asyncio.wait_for(
+                            _inner(*args, **kwargs), timeout=timeout_seconds
+                        )
+                    except asyncio.TimeoutError as exc:
+                        raise timeout_exception(str(exc)) from exc
+            else:
+                return await _inner(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def timeout(
     seconds: float,
     exception: Type[Exception] = asyncio.TimeoutError,
